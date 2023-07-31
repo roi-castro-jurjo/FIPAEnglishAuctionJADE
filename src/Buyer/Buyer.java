@@ -3,6 +3,7 @@ package Buyer;
 import jade.core.Agent;
 import jade.core.AID;
 import jade.core.behaviours.CyclicBehaviour;
+import jade.core.behaviours.TickerBehaviour;
 import jade.domain.DFService;
 import jade.domain.FIPAAgentManagement.DFAgentDescription;
 import jade.domain.FIPAAgentManagement.ServiceDescription;
@@ -18,8 +19,9 @@ import java.util.Random;
 public class Buyer extends Agent {
     //private ArrayList<AID> _sellers = new ArrayList<>();
     private HashMap<String, Integer> _wishList;
+    private ArrayList<String> _sentBids = new ArrayList<>();
 
-    private final String[] books = new String[5];
+    BuyerGUI gui;
 
 
 
@@ -42,61 +44,59 @@ public class Buyer extends Agent {
 
         _wishList = new HashMap<>();
 
-        books[0] = "primero";
-        books[1] = "segundo";
-        books[2] = "tercero";
-        books[3] = "cuarto";
-        books[4] = "quinto";
-
-        Random random = new Random();
-
-        for (int i = 0; i < 2; i++) {
-            int randomIndex = random.nextInt(books.length);
-            _wishList.put(books[randomIndex], random.nextInt(901) + 100);
-        }
-        for (HashMap.Entry<String, Integer> entry : _wishList.entrySet()) {
-            String book = entry.getKey();
-            int value = entry.getValue();
-            System.out.println(getLocalName() + " >> Libro: " + book + ", Valor: " + value);
-        }
+        gui = new BuyerGUI();
+        gui.setTitle(getLocalName());
+        gui.setVisible(true);
 
 
-        this.addBehaviour(new Scanning());
+        this.addBehaviour(new Scanning(this, 1000));
         this.addBehaviour(new ReceivingReply());
 
     }
 
 
-    private class Scanning extends CyclicBehaviour {
+    private class Scanning extends TickerBehaviour {
+
+        public Scanning(Agent a, long period) {
+            super(a, period);
+        }
 
         @Override
-        public void action() {
-            ACLMessage buyQuery  = new ACLMessage(ACLMessage.QUERY_REF);
+        public void onTick() {
+            ArrayList<String> foundBooks = gui.obtenerValoresPrimeraColumna();
+            gui.eliminarValores(_wishList, foundBooks);
 
-            String queryContent = String.join(",", _wishList.keySet());
+            HashMap<String, Integer> notFoundBooks = gui.obtenerLibrosBuscando();
+            _wishList.putAll(notFoundBooks);
 
-            buyQuery.setContent(queryContent);
+            if (!notFoundBooks.isEmpty()){
+                ACLMessage buyQuery  = new ACLMessage(ACLMessage.QUERY_REF);
 
-            DFAgentDescription emisorDesc = new DFAgentDescription();
-            ServiceDescription servicioDesc = new ServiceDescription();
-            servicioDesc.setType("seller");
-            emisorDesc.addServices(servicioDesc);
+                String queryContent = String.join(",", notFoundBooks.keySet());
 
-            try {
-                DFAgentDescription[] sellers = DFService.search(myAgent, emisorDesc);
+                buyQuery.setContent(queryContent);
 
-                for (DFAgentDescription seller : sellers){
-                    //_sellers.add(seller.getName());
-                    buyQuery.addReceiver(seller.getName());
+                DFAgentDescription emisorDesc = new DFAgentDescription();
+                ServiceDescription servicioDesc = new ServiceDescription();
+                servicioDesc.setType("seller");
+                emisorDesc.addServices(servicioDesc);
+
+                try {
+                    DFAgentDescription[] sellers = DFService.search(myAgent, emisorDesc);
+
+                    for (DFAgentDescription seller : sellers){
+                        //_sellers.add(seller.getName());
+                        buyQuery.addReceiver(seller.getName());
+                    }
+
+                    send(buyQuery);
+                    //System.out.println(getLocalName() + " >> " + "Enviadas querys.");
+                    block();
+
+                } catch (FIPAException e) {
+                    throw new RuntimeException(e);
                 }
-
-                send(buyQuery);
-                block();
-
-            } catch (FIPAException e) {
-                throw new RuntimeException(e);
             }
-
         }
     }
 
@@ -110,12 +110,65 @@ public class Buyer extends Agent {
                 switch (message.getPerformative()){
                     case ACLMessage.INFORM -> {
                         System.out.println(getLocalName() + " >> Recibido inform de " + message.getSender().getLocalName() + ": " + message.getContent());
+                        String[] proposition = message.getContent().split(",");
 
-                        ACLMessage reply = message.createReply();
-                        reply.setPerformative(ACLMessage.PROPOSE);
-                        reply.setContent("10");
+                        if (_wishList.get(proposition[0]) != null && (Integer.parseInt(proposition[1]) + Integer.parseInt(proposition[2])) <= _wishList.get(proposition[0])) {
 
-                        send(reply);
+                            int newPrice = Integer.parseInt(proposition[1]) + Integer.parseInt(proposition[2]);
+
+                            ACLMessage reply = message.createReply();
+                            reply.setPerformative(ACLMessage.PROPOSE);
+                            reply.setContent(proposition[0] + "," + newPrice);
+
+                            send(reply);
+
+                            gui.cambiarEstadoLibro(proposition[0], "Puja enviada");
+                            gui.actualizarLibro(proposition[0], proposition[1], "actualPrice");
+                            gui.actualizarLibro(proposition[0], proposition[2], "minBid");
+
+                            //_sentBids.add(proposition[0] + "," +_wishList.get(proposition[0]));
+                        }
+                    }
+
+                    case ACLMessage.REFUSE -> {
+                        System.out.println(getLocalName() + " >> Recibido refuse de " + message.getSender().getLocalName() + ": " + message.getContent());
+                        String[] proposition = message.getContent().split(",");
+
+                        if (_wishList.get(proposition[0]) != null && (Integer.parseInt(proposition[1]) + Integer.parseInt(proposition[2])) <= _wishList.get(proposition[0])) {
+                            System.out.println(getLocalName() + " >> " + proposition[1] + " + " + proposition[2] + " < " + _wishList.get(proposition[0]));
+
+                            int newPrice = Integer.parseInt(proposition[1]) + Integer.parseInt(proposition[2]);
+                            System.out.println(getLocalName() + " >> NewPrice: " + newPrice);
+
+                            ACLMessage reply = message.createReply();
+                            reply.setPerformative(ACLMessage.PROPOSE);
+                            reply.setContent(proposition[0] + "," + newPrice);
+
+                            send(reply);
+
+                            //_sentBids.add(proposition[0]);
+                            gui.cambiarEstadoLibro(proposition[0], "Contra-puja enviada");
+                            gui.actualizarLibro(proposition[0], proposition[1], "actualPrice");
+
+                        } else {
+                            ACLMessage reply = message.createReply();
+                            reply.setPerformative(ACLMessage.REFUSE);
+                            reply.setContent(proposition[0]);
+
+                            send(reply);
+
+                            gui.cambiarEstadoLibro(proposition[0], "Buscando...");
+                            gui.actualizarLibro(proposition[0], null, "actualPrice");
+                            gui.actualizarLibro(proposition[0], null, "minBid");
+                        }
+                    }
+
+                    case ACLMessage.AGREE -> {
+                        System.out.println(getLocalName() + " >> Recibido agree de " + message.getSender().getLocalName());
+                        String[] agreement = message.getContent().split(",");
+                        gui.cambiarEstadoLibro(agreement[0], "Comprado.");
+                        gui.actualizarLibro(agreement[0], agreement[1], "actualPrice");
+                        gui.moverFilaALaSubasta(agreement[0], message.getSender().getLocalName());
                     }
 
                     default -> {
